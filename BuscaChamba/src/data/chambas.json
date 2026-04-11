@@ -1,0 +1,22 @@
+[
+  {
+    "id": "1",
+    "nombre": "Stark Industries",
+    "puestos": ["Ingeniero de Mark XLIV", "Piloto de Pruebas", "IA Trainer (JARVIS)"]
+  },
+  {
+    "id": "2",
+    "nombre": "Google",
+    "puestos": ["SRE Engineer", "Product Manager", "UI Designer"]
+  },
+  {
+    "id": "3",
+    "nombre": "Bimbo",
+    "puestos": ["Supervisor de Calidad", "Logística de Rutas", "Chef Creativo"]
+  },
+  {
+    "id": "4",
+    "nombre": "PopCap Games",
+    "puestos": ["Zombólogo Jefe", "Diseñador de Plantas", "Beta Tester"]
+  }
+]
