@@ -2,13 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import * as DocumentPicker from "expo-document-picker";
 import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system";
 import {
   Alert,
   Platform,
   Pressable,
   SafeAreaView,
   StyleSheet,
+  StatusBar as RNStatusBar,
   Text,
+  FlatList,
   View,
 } from "react-native";
 
@@ -23,87 +26,59 @@ const COLORS = {
   danger: "#FF3B3B",
 };
 
-function PillButton({ label, onPress, variant = "panel", disabled = false }) {
-  const style = useMemo(() => {
-    if (variant === "neon") {
-      return {
-        backgroundColor: disabled ? "#123a0d" : COLORS.neonDark,
-        borderColor: disabled ? "#123a0d" : COLORS.neon,
-      };
-    }
-    if (variant === "danger") {
-      return { backgroundColor: "#2A1212", borderColor: COLORS.danger };
-    }
-    return { backgroundColor: COLORS.panel2, borderColor: "#1D242A" };
-  }, [variant, disabled]);
-
-  const textStyle = useMemo(() => {
-    if (variant === "neon") return { color: "#061006" };
-    return { color: COLORS.text };
-  }, [variant]);
-
+function ActionChip({ label, onPress, variant = "panel" }) {
+  const isNeon = variant === "neon";
   return (
     <Pressable
-      onPress={disabled ? undefined : onPress}
+      onPress={onPress}
       style={({ pressed }) => [
-        styles.btn,
-        style,
-        pressed && !disabled ? { opacity: 0.85 } : null,
-        disabled ? { opacity: 0.55 } : null,
+        styles.chip,
+        isNeon ? styles.chipNeon : styles.chipPanel,
+        pressed ? { opacity: 0.85 } : null,
       ]}
     >
-      <Text style={[styles.btnText, textStyle]}>{label}</Text>
+      <Text style={[styles.chipText, isNeon ? styles.chipTextNeon : null]}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
 
-function WelcomeScreen({ onContinue }) {
+function IconControl({ label, onPress, variant = "panel", disabled = false }) {
+  const isNeon = variant === "neon";
   return (
-    <SafeAreaView style={styles.root}>
-      <StatusBar style="light" />
-      <View style={styles.welcomeWrap}>
-        <View style={styles.brandRow}>
-          <View style={styles.neonDot} />
-          <Text style={styles.brand}>Miguel Player</Text>
-        </View>
-
-        <Text style={styles.welcomeTitle}>
-          Bienvenido, Miguel.{"\n"}Tu música, tus reglas.
-        </Text>
-        <Text style={styles.welcomeSub}>
-          Reproduce archivos locales del celular. Sin streaming. Sin gasto de
-          datos.
-        </Text>
-
-        <View style={{ height: 18 }} />
-        <PillButton label="ENTRAR" variant="neon" onPress={onContinue} />
-
-        <View style={{ height: 14 }} />
-        <Text style={styles.footerNote}>
-          Tip: En Samsung, el selector te deja elegir desde Descargas o tu
-          carpeta de música.
-        </Text>
-      </View>
-    </SafeAreaView>
+    <Pressable
+      onPress={disabled ? undefined : onPress}
+      style={({ pressed }) => [
+        styles.ctrlBtn,
+        isNeon ? styles.ctrlBtnNeon : styles.ctrlBtnPanel,
+        pressed && !disabled ? { transform: [{ scale: 0.98 }] } : null,
+        disabled ? { opacity: 0.45 } : null,
+      ]}
+    >
+      <Text style={[styles.ctrlText, isNeon ? styles.ctrlTextNeon : null]}>
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
-function PlayerScreen({ onBack }) {
+function PlayerScreen() {
   const soundRef = useRef(null);
-  const statusTimerRef = useRef(null);
 
-  const [picked, setPicked] = useState(null); // { uri, name }
   const [isLoaded, setIsLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
 
-  const canPlay = Boolean(picked?.uri) && isLoaded;
+  const [tracks, setTracks] = useState([]); // [{ uri, name }]
+  const [currentIndex, setCurrentIndex] = useState(-1);
+
+  const currentTrack = currentIndex >= 0 ? tracks[currentIndex] : null;
+  const canPlay = Boolean(currentTrack?.uri) && isLoaded;
 
   useEffect(() => {
     return () => {
-      if (statusTimerRef.current) clearInterval(statusTimerRef.current);
-      statusTimerRef.current = null;
       (async () => {
         try {
           if (soundRef.current) await soundRef.current.unloadAsync();
@@ -120,39 +95,8 @@ function PlayerScreen({ onBack }) {
     return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
   };
 
-  const syncStatus = async () => {
+  const attachSound = async (uri) => {
     try {
-      const s = soundRef.current;
-      if (!s) return;
-      const st = await s.getStatusAsync();
-      if (!st?.isLoaded) return;
-      setIsLoaded(true);
-      setIsPlaying(Boolean(st.isPlaying));
-      setPositionMs(st.positionMillis ?? 0);
-      setDurationMs(st.durationMillis ?? 0);
-    } catch (_e) {}
-  };
-
-  const ensureTimer = () => {
-    if (statusTimerRef.current) return;
-    statusTimerRef.current = setInterval(() => {
-      syncStatus();
-    }, 250);
-  };
-
-  const pickAudio = async () => {
-    try {
-      const res = await DocumentPicker.getDocumentAsync({
-        type: "audio/*",
-        multiple: false,
-        copyToCacheDirectory: false,
-      });
-
-      if (res.canceled) return;
-      const asset = res.assets?.[0];
-      if (!asset?.uri) return;
-
-      setPicked({ uri: asset.uri, name: asset.name || "Audio local" });
       setIsLoaded(false);
       setIsPlaying(false);
       setPositionMs(0);
@@ -173,8 +117,8 @@ function PlayerScreen({ onBack }) {
         playThroughEarpieceAndroid: false,
       });
 
-      const { sound, status } = await Audio.Sound.createAsync(
-        { uri: asset.uri },
+      const { sound } = await Audio.Sound.createAsync(
+        { uri },
         { shouldPlay: false, progressUpdateIntervalMillis: 250 },
         (st) => {
           if (!st?.isLoaded) return;
@@ -182,15 +126,97 @@ function PlayerScreen({ onBack }) {
           setIsPlaying(Boolean(st.isPlaying));
           setPositionMs(st.positionMillis ?? 0);
           setDurationMs(st.durationMillis ?? 0);
-          if (st.didJustFinish) setIsPlaying(false);
+          if (st.didJustFinish) {
+            setIsPlaying(false);
+            setPositionMs(st.durationMillis ?? 0);
+          }
         }
       );
 
       soundRef.current = sound;
-      setIsLoaded(Boolean(status?.isLoaded));
-      ensureTimer();
+    } catch (e) {
+      Alert.alert("No se pudo cargar el audio", String(e?.message || e));
+    }
+  };
+
+  const pickMp3Files = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ["audio/mpeg", "audio/*"],
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+
+      if (res.canceled) return;
+      const assets = (res.assets || [])
+        .filter((a) => a?.uri)
+        .filter((a) => (a?.name || "").toLowerCase().endsWith(".mp3"));
+
+      if (assets.length === 0) {
+        Alert.alert("Sin MP3", "Selecciona uno o más archivos .mp3.");
+        return;
+      }
+
+      const incoming = assets.map((a) => ({
+        uri: a.uri,
+        name: a.name || "audio.mp3",
+      }));
+
+      setTracks((prev) => {
+        const next = [...prev, ...incoming];
+        return next;
+      });
+
+      if (currentIndex === -1) {
+        setCurrentIndex(0);
+        await attachSound(incoming[0].uri);
+      }
     } catch (e) {
       Alert.alert("No se pudo abrir el audio", String(e?.message || e));
+    }
+  };
+
+  const pickFolderMp3 = async () => {
+    try {
+      if (!FileSystem?.StorageAccessFramework?.requestDirectoryPermissionsAsync) {
+        Alert.alert(
+          "No disponible",
+          "El selector de carpetas está disponible en Android con SAF."
+        );
+        return;
+      }
+
+      const perm =
+        await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!perm?.granted || !perm?.directoryUri) return;
+
+      const entries = await FileSystem.StorageAccessFramework.readDirectoryAsync(
+        perm.directoryUri
+      );
+
+      const mp3Uris = (entries || []).filter((u) =>
+        String(u).toLowerCase().endsWith(".mp3")
+      );
+
+      if (mp3Uris.length === 0) {
+        Alert.alert("Sin MP3", "No encontré .mp3 en esa carpeta.");
+        return;
+      }
+
+      const incoming = mp3Uris.map((uri) => {
+        const parts = String(uri).split("/");
+        const name = decodeURIComponent(parts[parts.length - 1] || "audio.mp3");
+        return { uri, name };
+      });
+
+      setTracks((prev) => [...prev, ...incoming]);
+
+      if (currentIndex === -1) {
+        setCurrentIndex(0);
+        await attachSound(incoming[0].uri);
+      }
+    } catch (e) {
+      Alert.alert("No se pudo leer la carpeta", String(e?.message || e));
     }
   };
 
@@ -198,8 +224,6 @@ function PlayerScreen({ onBack }) {
     try {
       if (!soundRef.current) return;
       await soundRef.current.playAsync();
-      ensureTimer();
-      await syncStatus();
     } catch (e) {
       Alert.alert("Error al reproducir", String(e?.message || e));
     }
@@ -209,10 +233,15 @@ function PlayerScreen({ onBack }) {
     try {
       if (!soundRef.current) return;
       await soundRef.current.pauseAsync();
-      await syncStatus();
     } catch (e) {
       Alert.alert("Error al pausar", String(e?.message || e));
     }
+  };
+
+  const togglePlayPause = async () => {
+    if (!canPlay) return;
+    if (isPlaying) await pause();
+    else await play();
   };
 
   const stop = async () => {
@@ -220,48 +249,139 @@ function PlayerScreen({ onBack }) {
       if (!soundRef.current) return;
       await soundRef.current.stopAsync();
       await soundRef.current.setPositionAsync(0);
-      await syncStatus();
     } catch (e) {
       Alert.alert("Error al detener", String(e?.message || e));
     }
   };
 
+  const openTrack = async (index) => {
+    const t = tracks[index];
+    if (!t?.uri) return;
+    setCurrentIndex(index);
+    await attachSound(t.uri);
+    await play();
+  };
+
+  const prev = async () => {
+    if (tracks.length === 0) return;
+    const nextIndex = currentIndex <= 0 ? 0 : currentIndex - 1;
+    await openTrack(nextIndex);
+  };
+
+  const next = async () => {
+    if (tracks.length === 0) return;
+    const nextIndex =
+      currentIndex < 0
+        ? 0
+        : Math.min(tracks.length - 1, currentIndex + 1);
+    await openTrack(nextIndex);
+  };
+
   const headerSubtitle = useMemo(() => {
-    if (!picked) return "Elige un archivo local (.mp3/.m4a/.wav)";
-    return picked.name;
-  }, [picked]);
+    if (!tracks.length) return "Selecciona MP3 locales (archivos o carpeta)";
+    return `${tracks.length} canciones • ${
+      currentTrack?.name || "Sin selección"
+    }`;
+  }, [tracks.length, currentTrack?.name]);
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar style="light" />
-      <View style={styles.topBar}>
-        <Pressable onPress={onBack} style={styles.backBtn}>
-          <Text style={styles.backText}>⟨</Text>
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.h1}>Miguel Player</Text>
-          <Text style={styles.sub}>{headerSubtitle}</Text>
+      <StatusBar style="light" translucent={false} backgroundColor={COLORS.bg} />
+
+      <View style={styles.header}>
+        <View style={styles.brandRow}>
+          <View style={styles.neonDot} />
+          <Text style={styles.brand}>Miguel Player</Text>
         </View>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>
-            {Platform.OS === "android" ? "SAMSUNG" : "LOCAL"}
-          </Text>
+        <Text style={styles.welcomeLine}>
+          Bienvenido, Miguel{" "}
+          <Text style={styles.welcomeLineNeon}></Text>
+        </Text>
+        <Text style={styles.sub}>{headerSubtitle}</Text>
+
+        <View style={styles.chipRow}>
+          <ActionChip label="Elegir MP3" variant="neon" onPress={pickMp3Files} />
+          <ActionChip label="Elegir carpeta" onPress={pickFolderMp3} />
+          <ActionChip
+            label="Limpiar lista"
+            onPress={async () => {
+              setTracks([]);
+              setCurrentIndex(-1);
+              setIsLoaded(false);
+              setIsPlaying(false);
+              setPositionMs(0);
+              setDurationMs(0);
+              try {
+                if (soundRef.current) await soundRef.current.unloadAsync();
+              } catch (_e) {}
+              soundRef.current = null;
+            }}
+          />
         </View>
       </View>
 
-      <View style={styles.panel}>
-        <View style={styles.rowBetween}>
-          <Text style={styles.kicker}>Fuente</Text>
-          <Text style={styles.kickerValue}>Archivos locales</Text>
-        </View>
+      <View style={styles.listWrap}>
+        <FlatList
+          data={tracks}
+          keyExtractor={(item, idx) => `${idx}:${item.uri}`}
+          contentContainerStyle={{
+            paddingBottom: 120,
+            paddingTop: 10,
+          }}
+          renderItem={({ item, index }) => {
+            const active = index === currentIndex;
+            return (
+              <Pressable
+                onPress={() => openTrack(index)}
+                style={({ pressed }) => [
+                  styles.trackRow,
+                  active ? styles.trackRowActive : null,
+                  pressed ? { opacity: 0.9 } : null,
+                ]}
+              >
+                <View style={styles.trackLeft}>
+                  <View
+                    style={[
+                      styles.trackIndicator,
+                      active ? styles.trackIndicatorActive : null,
+                    ]}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[styles.trackTitle, active ? styles.trackTitleActive : null]}
+                      numberOfLines={1}
+                    >
+                      {item.name}
+                    </Text>
+                    <Text style={styles.trackMeta} numberOfLines={1}>
+                      Local • .mp3
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.trackAction}>{active ? (isPlaying ? "▮▮" : "▶") : "▶"}</Text>
+              </Pressable>
+            );
+          }}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>Tu música, tus reglas.</Text>
+              <Text style={styles.emptySub}>
+                Elige archivos .mp3 o una carpeta. La lista aparece aquí.
+              </Text>
+            </View>
+          }
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+        />
+      </View>
 
-        <View style={{ height: 12 }} />
-        <PillButton label="SELECCIONAR AUDIO" variant="neon" onPress={pickAudio} />
-
-        <View style={{ height: 16 }} />
-        <View style={styles.rowBetween}>
-          <Text style={styles.time}>{fmt(positionMs)}</Text>
-          <Text style={styles.timeMuted}>{fmt(durationMs)}</Text>
+      <View style={styles.miniPlayer}>
+        <View style={styles.miniTop}>
+          <Text style={styles.miniTitle} numberOfLines={1}>
+            {currentTrack?.name || "Sin canción seleccionada"}
+          </Text>
+          <Text style={styles.miniTime}>
+            {fmt(positionMs)} / {fmt(durationMs)}
+          </Text>
         </View>
         <View style={styles.progressTrack}>
           <View
@@ -276,58 +396,41 @@ function PlayerScreen({ onBack }) {
             ]}
           />
         </View>
+        <View style={styles.miniControls}>
+          <IconControl label="⏮" onPress={prev} disabled={tracks.length === 0 || currentIndex <= 0} />
+          <IconControl
+            label={isPlaying ? "⏸" : "▶"}
+            variant="neon"
+            onPress={togglePlayPause}
+            disabled={!canPlay}
+          />
+          <IconControl
+            label="⏭"
+            onPress={next}
+            disabled={tracks.length === 0 || currentIndex >= tracks.length - 1}
+          />
+          <IconControl label="⏹" variant="panel" onPress={stop} disabled={!canPlay} />
+        </View>
       </View>
-
-      <View style={styles.controls}>
-        <PillButton
-          label="PLAY"
-          variant="panel"
-          onPress={play}
-          disabled={!canPlay || isPlaying}
-        />
-        <PillButton
-          label="PAUSE"
-          variant="panel"
-          onPress={pause}
-          disabled={!canPlay || !isPlaying}
-        />
-        <PillButton
-          label="STOP"
-          variant="danger"
-          onPress={stop}
-          disabled={!canPlay}
-        />
-      </View>
-
-      <Text style={styles.note}>
-        {picked
-          ? "Reproducción local activa. Cero streaming."
-          : "Selecciona un archivo para comenzar."}
-      </Text>
     </SafeAreaView>
   );
 }
 
 export default function App() {
-  const [screen, setScreen] = useState("welcome");
-  return screen === "welcome" ? (
-    <WelcomeScreen onContinue={() => setScreen("player")} />
-  ) : (
-    <PlayerScreen onBack={() => setScreen("welcome")} />
-  );
+  return <PlayerScreen />;
 }
 
 const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: COLORS.bg,
+    paddingTop: Platform.OS === "android" ? RNStatusBar.currentHeight ?? 0 : 0,
   },
 
-  welcomeWrap: {
-    flex: 1,
-    paddingHorizontal: 22,
-    paddingTop: 34,
-    justifyContent: "center",
+  header: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
   },
   brandRow: {
     flexDirection: "row",
@@ -346,100 +449,103 @@ const styles = StyleSheet.create({
   },
   brand: {
     color: COLORS.text,
-    fontSize: 16,
-    letterSpacing: 1.4,
+    fontSize: 13,
+    letterSpacing: 2.0,
     textTransform: "uppercase",
   },
-  welcomeTitle: {
+  welcomeLine: {
     color: COLORS.text,
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 16,
     fontWeight: "800",
-    marginTop: 8,
+    letterSpacing: 0.3,
   },
-  welcomeSub: {
-    color: COLORS.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 12,
-    maxWidth: 420,
-  },
-  footerNote: {
-    color: COLORS.muted,
-    fontSize: 12,
-    lineHeight: 18,
-    maxWidth: 520,
-  },
-
-  topBar: {
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  backBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: COLORS.panel2,
-    borderWidth: 1,
-    borderColor: "#1D242A",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  backText: {
-    color: COLORS.text,
-    fontSize: 18,
-    fontWeight: "800",
-  },
-  h1: {
-    color: COLORS.text,
-    fontSize: 18,
-    fontWeight: "800",
-    letterSpacing: 0.6,
+  welcomeLineNeon: {
+    color: COLORS.neon,
+    fontWeight: "900",
+    letterSpacing: 0.8,
   },
   sub: {
     color: COLORS.muted,
     fontSize: 12,
-    marginTop: 2,
-  },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: COLORS.panel2,
-    borderWidth: 1,
-    borderColor: COLORS.neonDark,
-  },
-  badgeText: {
-    color: COLORS.neon,
-    fontWeight: "800",
-    fontSize: 11,
-    letterSpacing: 1.2,
+    marginTop: 6,
   },
 
-  panel: {
-    marginHorizontal: 16,
-    marginTop: 8,
-    padding: 16,
-    borderRadius: 16,
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 12,
+  },
+  chip: {
+    height: 36,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chipPanel: { backgroundColor: COLORS.panel2, borderColor: "#1D242A" },
+  chipNeon: { backgroundColor: COLORS.neonDark, borderColor: COLORS.neon },
+  chipText: { fontSize: 12, fontWeight: "900", letterSpacing: 0.8, color: COLORS.text },
+  chipTextNeon: { color: "#061006" },
+
+  listWrap: {
+    flex: 1,
+    paddingHorizontal: 16,
+  },
+  trackRow: {
     backgroundColor: COLORS.panel,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: "#1D242A",
-  },
-  rowBetween: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  kicker: { color: COLORS.muted, fontSize: 12, letterSpacing: 1.2 },
-  kickerValue: { color: COLORS.text, fontSize: 12, fontWeight: "700" },
-  time: { color: COLORS.text, fontSize: 12, fontWeight: "800" },
-  timeMuted: { color: COLORS.muted, fontSize: 12, fontWeight: "700" },
-  progressTrack: {
+  trackRowActive: {
+    borderColor: COLORS.neonDark,
+    shadowColor: COLORS.neon,
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+  },
+  trackLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+  trackIndicator: {
+    width: 10,
     height: 10,
+    borderRadius: 10,
+    backgroundColor: "#2A333B",
+  },
+  trackIndicatorActive: { backgroundColor: COLORS.neon },
+  trackTitle: { color: COLORS.text, fontSize: 13, fontWeight: "800" },
+  trackTitleActive: { color: COLORS.neon },
+  trackMeta: { color: COLORS.muted, fontSize: 11, marginTop: 2 },
+  trackAction: { color: COLORS.muted, fontSize: 14, fontWeight: "900", marginLeft: 12 },
+
+  empty: {
+    paddingTop: 36,
+    paddingHorizontal: 10,
+  },
+  emptyTitle: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
+  emptySub: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 8, maxWidth: 520 },
+
+  miniPlayer: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 14,
+    backgroundColor: COLORS.panel,
+    borderRadius: 18,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#1D242A",
+  },
+  miniTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  miniTitle: { flex: 1, color: COLORS.text, fontSize: 12, fontWeight: "900" },
+  miniTime: { color: COLORS.muted, fontSize: 11, fontWeight: "800" },
+  progressTrack: {
+    height: 8,
     borderRadius: 999,
     backgroundColor: COLORS.panel2,
     overflow: "hidden",
@@ -453,33 +559,23 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     borderRightColor: COLORS.neon,
   },
-
-  controls: {
+  miniControls: {
     flexDirection: "row",
     gap: 10,
-    paddingHorizontal: 16,
-    marginTop: 16,
+    marginTop: 12,
+    alignItems: "center",
+    justifyContent: "space-between",
   },
-
-  btn: {
-    flex: 1,
-    height: 48,
-    borderRadius: 14,
+  ctrlBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
-  btnText: {
-    fontWeight: "900",
-    letterSpacing: 1.2,
-    fontSize: 12,
-  },
-
-  note: {
-    color: COLORS.muted,
-    fontSize: 12,
-    lineHeight: 18,
-    paddingHorizontal: 16,
-    marginTop: 14,
-  },
+  ctrlBtnPanel: { backgroundColor: COLORS.panel2, borderColor: "#1D242A" },
+  ctrlBtnNeon: { backgroundColor: COLORS.neonDark, borderColor: COLORS.neon },
+  ctrlText: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
+  ctrlTextNeon: { color: "#061006" },
 });
